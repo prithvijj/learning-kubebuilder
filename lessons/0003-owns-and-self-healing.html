@@ -1,0 +1,155 @@
+<title>Lesson 3: Owns() and Self-Healing</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+<body class="lesson">
+
+<p class="kicker">Lesson 3 · Kubebuilder &amp; Controller Internals</p>
+<h1>Owns() and Self-Healing</h1>
+
+<p>
+Your controller from <a href="../lessons/0002-scaffold-your-first-controller.html">Lesson 2</a>
+watches exactly one thing: <code>Greeting</code>. It has no idea the
+ConfigMap it created even exists once <code>Reconcile</code> returns. Let's
+prove that's a gap, then close it with one line.
+</p>
+
+<h2>Step 0 — prove the gap exists</h2>
+<p>With <code>make run</code> still going from Lesson 2, in another terminal:</p>
+<pre><code>kubectl patch configmap greeting-sample --type merge -p '{"data":{"message":"hand-edited, not from spec"}}'
+kubectl get configmap greeting-sample -o yaml</code></pre>
+<p>
+Nothing happens. No new log line, no correction. The edit sticks forever,
+even though it directly contradicts the Greeting's <code>spec.message</code>.
+Your controller is blind to this object outside of the one moment it created
+or last touched it.
+</p>
+
+<h2>Step 1 — notice what's already in place</h2>
+<p>
+Look back at your Lesson 2 <code>Reconcile</code> code — specifically this line, which you already wrote:
+</p>
+<pre><code>return controllerutil.SetControllerReference(&greeting, cm, r.Scheme)</code></pre>
+<p>Check what it actually did:</p>
+<pre><code>kubectl get configmap greeting-sample -o yaml</code></pre>
+<p>
+Look for <code>metadata.ownerReferences</code>. There's already a record
+pointing from the ConfigMap back to the Greeting, with
+<code>controller: true</code>. You built the mechanism a secondary watch
+needs before you had the watch itself.
+</p>
+
+<h2>Step 2 — add the watch</h2>
+<p>In <code>internal/controller/greeting_controller.go</code>, find <code>SetupWithManager</code>:</p>
+<pre><code>func (r *GreetingReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&appsv1.Greeting{}).
+		Named("greeting").
+		Complete(r)
+}</code></pre>
+<p>Add one line:</p>
+<pre><code>func (r *GreetingReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&appsv1.Greeting{}).
+		Owns(&corev1.ConfigMap{}).
+		Named("greeting").
+		Complete(r)
+}</code></pre>
+
+<div class="callout">
+<p>
+<strong>What that line actually does:</strong> <code>Owns()</code> wires up a
+second watch — this time on ConfigMaps — using an event handler called
+<code>EnqueueRequestForOwner</code>. When a ConfigMap changes, that handler
+reads its <a href="../reference/0001-controller-anatomy-glossary.html">owner reference</a>,
+finds the Greeting it points at, and enqueues <em>the Greeting's</em>
+namespace/name into the exact same WorkQueue from Lesson 1. Your
+<code>Reconcile</code> function is called no differently than before — it
+still has no idea whether it woke up because the Greeting changed or because
+someone poked its ConfigMap. It just re-derives desired state, same as always.
+</p>
+</div>
+
+<p>No RBAC change needed — Lesson 2's marker already grants <code>watch</code> on ConfigMaps. Restart the manager:</p>
+<pre><code># Ctrl-C the running make run, then:
+make run</code></pre>
+
+<h2>Step 3 — watch it heal</h2>
+<p>Repeat the hand-edit from Step 0:</p>
+<pre><code>kubectl patch configmap greeting-sample --type merge -p '{"data":{"message":"hand-edited, not from spec"}}'</code></pre>
+<p>
+This time a log line should appear immediately — <code>Reconcile</code> fired
+without you touching the Greeting at all. Check the ConfigMap again:
+</p>
+<pre><code>kubectl get configmap greeting-sample -o yaml</code></pre>
+<p>It's back to matching <code>spec.message</code>. Nothing in your code branches on "was this triggered by a hand-edit" — it's the same <code>CreateOrUpdate</code> call from Lesson 2, just triggered from a different source.</p>
+
+<h2>Step 4 — the trap: delete the ConfigMap</h2>
+<pre><code>kubectl delete configmap greeting-sample</code></pre>
+<p>
+Watch the logs: a delete event fires the same Reconcile, which calls
+<code>CreateOrUpdate</code> again and recreates the ConfigMap from scratch.
+Self-healing in both directions — drift and disappearance.
+</p>
+
+<h2>Step 5 — the other trap: delete the Greeting</h2>
+<pre><code>kubectl delete greeting greeting-sample
+kubectl get configmap greeting-sample</code></pre>
+<p>The ConfigMap disappears too. Before you conclude "my Owns() watch did that" — check your manager's logs. There's no Reconcile log line for it, because there's nothing to reconcile: the Greeting is gone, so <code>r.Get</code> returns not-found and the function returns early.</p>
+
+<div class="callout">
+<p>
+<strong>Something else deleted it: Kubernetes' own garbage collector</strong>,
+a built-in control loop that has nothing to do with your code. It watches
+owner references cluster-wide and deletes an object once every owner
+pointing at it is gone. The same field
+(<code>metadata.ownerReferences</code>, <code>controller: true</code>) drives
+two independent systems — your <code>Owns()</code> watch, and the cluster's
+garbage collector. Worth keeping distinct: one runs your Go code, the other never does.
+</p>
+</div>
+
+<div class="primary-source">
+<span class="label">Primary source</span>
+<a href="https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/builder#Builder.Owns" target="_blank">controller-runtime's <code>Builder.Owns</code> docs</a> for the exact mechanics (including <code>OnlyControllerOwner</code> vs. watching every owner). For the garbage collector side, see the Kubernetes docs on <a href="https://kubernetes.io/docs/concepts/architecture/garbage-collection/#owners-and-dependents" target="_blank">owners and dependents</a>.
+</div>
+
+<h2>Check your understanding</h2>
+
+<div class="quiz-mcq" data-answer="b">
+  <p class="quiz-q">You kubectl-edit the ConfigMap directly. What key gets pushed onto the WorkQueue?</p>
+  <button data-choice="a">The ConfigMap's own name</button>
+  <button data-choice="b">The owning Greeting's name</button>
+  <button data-choice="c">Both keys, queued together</button>
+  <button data-choice="d">No key — edits get ignored</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz-mcq" data-answer="b">
+  <p class="quiz-q">You delete the Greeting object. What actually deletes its ConfigMap?</p>
+  <button data-choice="a">Your own Reconcile function code</button>
+  <button data-choice="b">Kubernetes' built-in garbage collector</button>
+  <button data-choice="c">The Owns watch's event handler itself</button>
+  <button data-choice="d">Nothing — the ConfigMap is orphaned</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<h2>Where this goes next</h2>
+<p>
+This is real self-healing, running on your own cluster, over your own CRD —
+which covers three of your four success criteria from the mission at least
+once each. The remaining open thread from Lesson 2 is still there whenever
+you want it: giving <code>Greeting</code> a proper <code>Status</code> so
+<code>kubectl get greeting</code> shows something useful, instead of relying
+on logs and <code>kubectl get configmap</code> to know what happened.
+</p>
+
+<div class="ask-teacher">
+Anything about the EnqueueRequestForOwner mechanism, or the GC vs. Owns() distinction, feel fuzzy? Ask before moving on — this lesson is the crux of "how the logic gets run" from your original mission.
+</div>
+
+<nav class="lesson-links">
+  <span>&larr; <a href="../lessons/0002-scaffold-your-first-controller.html">Lesson 2: From Diagram to Running Code</a></span>
+  <span>Glossary: <a href="../reference/0001-controller-anatomy-glossary.html">Controller Anatomy</a></span>
+</nav>
+
+</body>

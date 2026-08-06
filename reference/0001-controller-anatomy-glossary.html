@@ -37,6 +37,16 @@
   <dt>Edge-triggered</dt>
   <dd>The opposite property: reacting to a specific transition (this exact event, this exact diff). Naive event handlers are edge-triggered and fragile — miss one event and you're permanently wrong. Controllers deliberately avoid this.</dd>
 
+  <dt>Owner reference</dt>
+  <dd>A field (<code>metadata.ownerReferences</code>) on an object pointing back at the object that created it. Set via <code>controllerutil.SetControllerReference</code>. It does two unrelated jobs: it's what a secondary watch reads to redirect events, and separately it's what the cluster's garbage collector reads to cascade-delete children.</dd>
+
+  <dt>Secondary watch (Owns)</dt>
+  <dd>A watch on a Kind other than the one passed to <code>For()</code>, added via <code>.Owns(&amp;SomeKind{})</code> in <code>SetupWithManager</code>. It feeds the <em>same</em> WorkQueue as the primary watch, but translates each event into the <strong>owner's</strong> key (read from the owner reference) rather than the changed object's own key.</dd>
+  <dd class="avoid"><em>Avoid:</em> assuming a secondary watch is a different mechanism from Lesson 1's WorkQueue — it's the identical queue, just fed by a second source with a translation step in front of it.</dd>
+
+  <dt>Garbage collection (cascading delete)</dt>
+  <dd>A separate control loop, built into Kubernetes itself (not your controller), that deletes an object once every owner reference pointing at it is gone. This is why deleting a Greeting removes its ConfigMap even though no line of your Reconcile code calls delete — your controller never runs for this at all.</dd>
+
 </dl>
 
 </body>

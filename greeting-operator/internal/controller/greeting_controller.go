@@ -19,12 +19,17 @@ package controller
 import (
 	"context"
 
+	appsv1 "greeting-operator/api/v1"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	appsv1 "greeting-operator/api/v1"
+	corev1 "k8s.io/api/core/v1"
 )
 
 // GreetingReconciler reconciles a Greeting object
@@ -36,6 +41,7 @@ type GreetingReconciler struct {
 // +kubebuilder:rbac:groups=apps.kubebuilder-lessons.dev,resources=greetings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps.kubebuilder-lessons.dev,resources=greetings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps.kubebuilder-lessons.dev,resources=greetings/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -47,10 +53,34 @@ type GreetingReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/reconcile
 func (r *GreetingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var greeting appsv1.Greeting
+	if err := r.Get(ctx, req.NamespacedName, &greeting); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil // object gone - nothing to do
+		}
+		return ctrl.Result{}, err
+	}
 
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      req.Name,
+			Namespace: req.Namespace,
+		},
+	}
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		cm.Data["message"] = greeting.Spec.Message
+		return controllerutil.SetControllerReference(&greeting, cm, r.Scheme)
+	})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	log.Info("reconciled greeting", "configmap-op", op)
 	return ctrl.Result{}, nil
 }
 
