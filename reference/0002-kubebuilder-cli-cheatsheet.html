@@ -43,4 +43,13 @@
   <dd>Confirms which cluster <code>make install</code> / <code>make run</code> / <code>kubectl</code> are about to talk to. Check this before running anything destructive.</dd>
 </dl>
 
+<h2 style="margin-top:2rem;font-size:1.1rem;">Imports you'll reach for by name before your editor knows them</h2>
+<dl>
+  <dt>apierrors "k8s.io/apimachinery/pkg/api/errors"</dt>
+  <dd>Gives you <code>apierrors.IsNotFound(err)</code> and friends (<code>IsAlreadyExists</code>, <code>IsConflict</code>) — the standard way to branch on API error type inside <code>Reconcile</code>.</dd>
+
+  <dt>"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"</dt>
+  <dd>Gives you <code>controllerutil.CreateOrUpdate</code> and <code>controllerutil.SetControllerReference</code> — the standard pattern for "make sure a derived object exists and looks like this."</dd>
+</dl>
+
 </body>
