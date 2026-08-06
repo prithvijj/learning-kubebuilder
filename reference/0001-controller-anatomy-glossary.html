@@ -1,0 +1,42 @@
+<title>Glossary: Controller Anatomy</title>
+<link rel="stylesheet" href="../assets/style.css">
+<body class="reference">
+
+<h1>Controller Anatomy — Glossary</h1>
+<p class="subtitle">Core vocabulary for how a Custom Resource goes from stored data to running logic. Companion to <a href="../lessons/0001-anatomy-of-a-controller.html">Lesson 1</a>.</p>
+
+<dl>
+
+  <dt>CRD (CustomResourceDefinition)</dt>
+  <dd>A schema you register with the API server, teaching it a new kind of object (a new Kind/API path) it can validate and store — like adding a new built-in type such as Pod, but one you defined.</dd>
+  <dd class="avoid"><em>Avoid:</em> "custom API" (too vague — CRD is specifically the schema registration)</dd>
+
+  <dt>CR (Custom Resource)</dt>
+  <dd>An actual object of a Kind that a CRD defines — the thing <code>kubectl apply</code> creates. On its own, a CR is just data sitting in etcd. Nothing executes because a CR exists; a controller has to be watching for it.</dd>
+
+  <dt>Manager</dt>
+  <dd>The top-level object in a controller-runtime program. It owns a shared Cache and Client, starts and stops one or more Controllers, and runs their reconcile loops.</dd>
+
+  <dt>Cache (Informer)</dt>
+  <dd>A local, in-memory mirror of objects from the API server, kept in sync via List + Watch. Reads inside a Reconciler go through this cache, not a live API call — that's what keeps controllers from hammering the API server.</dd>
+  <dd class="avoid"><em>Avoid:</em> using "informer" and "cache" as if they're different things in this workspace — here, the informer <em>is</em> the mechanism that keeps the cache in sync.</dd>
+
+  <dt>WorkQueue</dt>
+  <dd>A queue of object keys (namespace/name), not events or object bodies. Multiple rapid changes to the same object collapse into one queued key — the queue tracks <em>that something changed</em>, not <em>what</em> changed.</dd>
+
+  <dt>Reconcile Request</dt>
+  <dd>The single piece of information a worker hands to your <code>Reconcile</code> function: a namespace/name. No payload, no diff, no event type.</dd>
+
+  <dt>Reconciler</dt>
+  <dd>Your code. A function shaped <code>Reconcile(ctx, Request) (Result, error)</code> that re-reads current state from the Cache and Client, compares it to what it should be, and takes action to close the gap.</dd>
+
+  <dt>Level-triggered</dt>
+  <dd>The design property where a Reconciler reacts to the current state of the world, not to the specific event that woke it up. It must be safe to call repeatedly, and safe to call even when nothing actually needs doing (idempotent).</dd>
+  <dd class="avoid"><em>Avoid:</em> "event-driven" as a description of Reconcile itself — the workqueue is event-driven, but Reconcile is level-triggered. Keep the two separate.</dd>
+
+  <dt>Edge-triggered</dt>
+  <dd>The opposite property: reacting to a specific transition (this exact event, this exact diff). Naive event handlers are edge-triggered and fragile — miss one event and you're permanently wrong. Controllers deliberately avoid this.</dd>
+
+</dl>
+
+</body>

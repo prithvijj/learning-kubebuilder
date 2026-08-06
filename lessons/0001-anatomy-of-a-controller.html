@@ -1,0 +1,175 @@
+<title>Lesson 1: The Anatomy of a Controller</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+<body class="lesson">
+
+<p class="kicker">Lesson 1 · Kubebuilder &amp; Controller Internals</p>
+<h1>The Anatomy of a Controller</h1>
+
+<p>
+You already know what happens when <code>kubectl apply</code> hits a built-in
+type: the API server validates it and writes it to etcd. That's the whole
+story for a Pod object sitting there. It's also, perhaps surprisingly, the
+<em>entire</em> story for a Custom Resource too — right up until something
+else decides to care about it.
+</p>
+
+<div class="callout">
+<p>
+<strong>Key idea:</strong> a CRD + a CR, by themselves, do nothing. A CRD just
+teaches the API server a new schema. A CR is just an object of that schema,
+sitting in etcd. No logic runs because you created one. Logic only runs
+because a separate process — <strong>a controller</strong> — is watching and
+decided to react.
+</p>
+</div>
+
+<h2>The piece you're adding: a controller process</h2>
+
+<p>
+A controller-runtime program (what Kubebuilder scaffolds for you) is a
+standalone binary, running wherever you deploy it, that does four things in
+sequence. Here's the whole flow, from your <code>kubectl apply</code> to your
+code actually executing:
+</p>
+
+<figure class="diagram-wrap">
+<svg class="diagram" viewBox="0 0 760 320" role="img" aria-label="Flow diagram from kubectl apply through the API server, informer cache, workqueue, to a Reconcile call, with the reconciler writing back to the API server.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" style="fill:currentColor" />
+    </marker>
+  </defs>
+  <style>
+    .diagram { color: var(--ink); font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 13px; }
+    .diagram .box { fill: var(--code-bg); stroke: currentColor; stroke-width: 1.2; }
+    .diagram .box.you { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram .lbl { fill: currentColor; text-anchor: middle; }
+    .diagram .sub { fill: var(--muted); text-anchor: middle; font-size: 11px; }
+    .diagram .edge { stroke: currentColor; stroke-width: 1.2; fill: none; marker-end: url(#arrow); }
+    .diagram .edge-lbl { fill: var(--muted); text-anchor: middle; font-size: 11px; }
+  </style>
+
+  <!-- kubectl -->
+  <rect class="box" x="10" y="20" width="120" height="46" rx="6"/>
+  <text class="lbl" x="70" y="48">kubectl apply</text>
+
+  <!-- API server -->
+  <rect class="box" x="190" y="20" width="130" height="46" rx="6"/>
+  <text class="lbl" x="255" y="42">API server</text>
+  <text class="sub" x="255" y="58">+ etcd</text>
+
+  <path class="edge" d="M130,43 L190,43"/>
+
+  <!-- Cache/Informer -->
+  <rect class="box" x="190" y="140" width="130" height="52" rx="6"/>
+  <text class="lbl" x="255" y="162">Cache</text>
+  <text class="sub" x="255" y="178">(informer)</text>
+
+  <path class="edge" d="M280,66 C 280,95 280,110 280,140"/>
+  <text class="edge-lbl" x="360" y="105">List + Watch</text>
+
+  <!-- WorkQueue -->
+  <rect class="box" x="380" y="140" width="130" height="52" rx="6"/>
+  <text class="lbl" x="445" y="162">WorkQueue</text>
+  <text class="sub" x="445" y="178">keys, not events</text>
+
+  <path class="edge" d="M320,166 L380,166"/>
+
+  <!-- Worker / Reconcile -->
+  <rect class="box you" x="570" y="140" width="160" height="52" rx="6"/>
+  <text class="lbl" x="650" y="162">Reconcile()</text>
+  <text class="sub" x="650" y="178">your code</text>
+
+  <path class="edge" d="M510,166 L570,166"/>
+
+  <!-- back to API server -->
+  <path class="edge" d="M650,140 C 650,80 400,30 320,43"/>
+  <text class="edge-lbl" x="500" y="20">Get / Update via Client</text>
+
+  <text class="sub" x="255" y="260">registers schema for your Kind</text>
+  <rect class="box" x="190" y="270" width="130" height="34" rx="6" style="opacity:0.55"/>
+  <text class="lbl" x="255" y="292" style="opacity:0.75">CRD (once)</text>
+  <path class="edge" d="M255,270 L255,66" style="opacity:0.55"/>
+</svg>
+<figcaption class="sidenote">
+The loop back on the right is the part that surprises people: <code>Reconcile</code> doesn't get told what changed — it uses the Client (backed by the same Cache) to read <em>current</em> state itself, then decides what to do.
+</figcaption>
+</figure>
+
+<h2>What actually lands in your function</h2>
+
+<p>
+This is the detail that reshapes how you write <code>Reconcile</code>: the
+workqueue holds <strong>keys</strong> — a namespace and a name — not events,
+not diffs, not object bodies. If the same object changes three times before a
+worker gets to it, that's still one key in the queue. Your function gets
+called once, and has to re-derive the full current state from scratch.
+</p>
+
+<div class="callout">
+<p>
+<strong>This is why controllers must be <a class="glossary-term" href="../reference/0001-controller-anatomy-glossary.html" target="_blank" title="See glossary">level-triggered</a>, not edge-triggered.</strong>
+Your <code>Reconcile</code> function can't assume it knows what happened. It
+has to look at the object as it is <em>right now</em> and decide what, if
+anything, needs to change — every single time it's called, including on a
+plain periodic resync where nothing changed at all.
+</p>
+</div>
+
+<div class="primary-source">
+<span class="label">Primary source</span>
+Read the <a href="https://book.kubebuilder.io/architecture.html" target="_blank">Kubebuilder Book's Architecture Concepts page</a> for the official diagram of Manager / Cache / Client / Controller. For the layer controller-runtime is built on, skim <a href="https://github.com/kubernetes/sample-controller/blob/master/docs/controller-client-go.md" target="_blank">sample-controller's client-go explainer</a> — same ideas, one abstraction layer lower.
+</div>
+
+<h2>Check your understanding</h2>
+
+<div class="quiz-mcq" data-answer="c">
+  <p class="quiz-q">When a worker pops an item off the workqueue and calls your Reconcile function, what does it actually hand it?</p>
+  <button data-choice="a">The complete previous object</button>
+  <button data-choice="b">The complete current object</button>
+  <button data-choice="c">Only the object&rsquo;s name</button>
+  <button data-choice="d">The raw watch event</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz-mcq" data-answer="b">
+  <p class="quiz-q">An object is updated twice within the same second, before any worker has picked up the resulting key. What happens?</p>
+  <button data-choice="a">Reconcile runs twice, once per update</button>
+  <button data-choice="b">Reconcile runs once for latest key</button>
+  <button data-choice="c">The second update is silently dropped</button>
+  <button data-choice="d">The controller crashes and needs restart</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz-order" data-answer="1,2,3,4,5">
+  <p class="quiz-q">Drag into the correct order — from applying a manifest to your code running:</p>
+  <ol class="quiz-order-list">
+    <li data-step="4" draggable="true">The event handler enqueues the object&rsquo;s namespace/name in the workqueue</li>
+    <li data-step="1" draggable="true">You run <code>kubectl apply -f my-cr.yaml</code></li>
+    <li data-step="5" draggable="true">A worker pops the key and calls your Reconcile function</li>
+    <li data-step="2" draggable="true">The API server validates the object and stores it in etcd</li>
+    <li data-step="3" draggable="true">The controller&rsquo;s informer gets a watch event and updates its local cache</li>
+  </ol>
+  <button class="quiz-check">Check order</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<h2>Where this goes next</h2>
+<p>
+The next lesson gets hands-on: scaffolding an actual project with
+<code>kubebuilder init</code> and <code>kubebuilder create api</code>, and
+watching this diagram become real files. Nothing to prepare — just have Go
+and a cluster (kind is fine) available.
+</p>
+
+<div class="ask-teacher">
+Something unclear, or want to go deeper on any box in that diagram? Ask me directly — that's what I'm here for.
+</div>
+
+<nav class="lesson-links">
+  <span>Glossary: <a href="../reference/0001-controller-anatomy-glossary.html">Controller Anatomy</a></span>
+  <span>Mission: <a href="../MISSION.md">MISSION.md</a></span>
+</nav>
+
+</body>
