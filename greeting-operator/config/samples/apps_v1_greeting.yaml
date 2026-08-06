@@ -1,0 +1,9 @@
+apiVersion: apps.kubebuilder-lessons.dev/v1
+kind: Greeting
+metadata:
+  labels:
+    app.kubernetes.io/name: greeting-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: greeting-sample
+spec:
+  # TODO(user): Add fields here

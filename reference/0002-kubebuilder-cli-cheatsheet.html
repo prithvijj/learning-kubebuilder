@@ -1,0 +1,46 @@
+<title>Cheat Sheet: Kubebuilder CLI &amp; Makefile targets</title>
+<link rel="stylesheet" href="../assets/style.css">
+<body class="reference">
+
+<h1>Kubebuilder CLI &amp; Makefile Targets</h1>
+<p class="subtitle">Quick lookup for the commands used in <a href="../lessons/0002-scaffold-your-first-controller.html">Lesson 2</a>. Run from your project root unless noted.</p>
+
+<dl>
+  <dt>kubebuilder init --domain &lt;domain&gt; --repo &lt;module-path&gt;</dt>
+  <dd>One-time, at the start of a new project. Scaffolds <code>main.go</code>, the <code>Makefile</code>, <code>go.mod</code>, and PROJECT config. <code>--repo</code> is your Go module path, not a real URL — it never needs to be published.</dd>
+
+  <dt>kubebuilder create api --group &lt;g&gt; --version &lt;v&gt; --kind &lt;Kind&gt; --resource --controller</dt>
+  <dd>Scaffolds a new CRD's Go types (<code>api/&lt;version&gt;/&lt;kind&gt;_types.go</code>) and a controller skeleton (<code>internal/controller/&lt;kind&gt;_controller.go</code>). Omit <code>--resource</code>/<code>--controller</code> and it will ask interactively instead.</dd>
+
+  <dt>make manifests</dt>
+  <dd>Regenerates CRD YAML (<code>config/crd/bases</code>) and RBAC YAML (<code>config/rbac</code>) from the Go struct tags and <code>//+kubebuilder:rbac</code> markers in your code. Run this after every change to a <code>_types.go</code> file or an RBAC marker.</dd>
+
+  <dt>make generate</dt>
+  <dd>Regenerates <code>DeepCopy</code>/<code>DeepCopyInto</code> methods your types need to satisfy <code>runtime.Object</code>. Run after changing a type's fields.</dd>
+
+  <dt>make install</dt>
+  <dd>Applies the generated CRDs to whatever cluster your current kubeconfig context points at. This is the step that teaches your k3d cluster's API server the new schema — see <a href="../reference/0001-controller-anatomy-glossary.html">CRD</a> in the Lesson 1 glossary.</dd>
+
+  <dt>make uninstall</dt>
+  <dd>Removes the CRDs from the cluster. Note: this deletes every CR of that Kind too — etcd has nowhere to store objects of a type the API server no longer recognizes.</dd>
+
+  <dt>make run</dt>
+  <dd>Builds and runs the manager as a local Go process on your machine, authenticating to the cluster via your kubeconfig. Fastest inner loop for development — no image build, no k3d image import. Ctrl-C to stop.</dd>
+
+  <dt>make docker-build docker-push IMG=&lt;ref&gt;</dt>
+  <dd>Builds the manager into a container image. With k3d, skip the registry push and instead run <code>k3d image import &lt;ref&gt; -c &lt;cluster&gt;</code> to load it straight into the cluster's containerd.</dd>
+
+  <dt>make deploy IMG=&lt;ref&gt;</dt>
+  <dd>Applies manifests that run the manager <em>inside</em> the cluster as a Deployment, instead of on your machine. Use once <code>make run</code> works and you want to test the real deployment path.</dd>
+
+  <dt>k3d cluster create &lt;name&gt;</dt>
+  <dd>Creates a new k3d cluster and merges its kubeconfig, switching your current context to it automatically.</dd>
+
+  <dt>k3d cluster list / k3d cluster delete &lt;name&gt;</dt>
+  <dd>List existing k3d clusters, or tear one down.</dd>
+
+  <dt>kubectl config current-context</dt>
+  <dd>Confirms which cluster <code>make install</code> / <code>make run</code> / <code>kubectl</code> are about to talk to. Check this before running anything destructive.</dd>
+</dl>
+
+</body>

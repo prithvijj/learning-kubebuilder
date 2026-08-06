@@ -16,6 +16,10 @@
   Official explanation of what a CRD/CR actually is at the API machinery level (as opposed to what a controller does with it). Use for: grounding "a CR is just stored state" before introducing controllers.
 - [_Kubernetes Patterns_ (2nd ed.) — Ibryam & Huß, O'Reilly](https://www.oreilly.com/library/view/kubernetes-patterns-2nd/9781098131678/)
   Especially the Controller and Operator chapters. Use for: design-level patterns once the mechanics are solid — good for the "design one from scratch" success criterion.
+- [Kubebuilder Book — CronJob Tutorial](https://book.kubebuilder.io/cronjob-tutorial/cronjob-tutorial)
+  The official end-to-end worked example (a full CRD + controller, more involved than our toy `Greeting`). Use for: the next step up once the basics from Lesson 2 feel easy, especially for status conditions and owned-object watches.
+- [k3d documentation](https://k3d.io/)
+  Official docs for the cluster tool the user tests with. Use for: cluster lifecycle (create/delete), image import for locally-built controller images, kubeconfig merging behavior.
 
 ## Wisdom (Communities)
 

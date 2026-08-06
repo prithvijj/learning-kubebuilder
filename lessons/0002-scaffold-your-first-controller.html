@@ -1,0 +1,192 @@
+<title>Lesson 2: From Diagram to Running Code</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+<body class="lesson">
+
+<p class="kicker">Lesson 2 · Kubebuilder &amp; Controller Internals</p>
+<h1>From Diagram to Running Code</h1>
+
+<p>
+<a href="../lessons/0001-anatomy-of-a-controller.html">Lesson 1</a> was the
+diagram: API server, Cache, WorkQueue, <code>Reconcile()</code>. Today you
+build the real thing — a Kind called <code>Greeting</code>, a controller that
+reacts to it, running against your own k3d cluster — and watch that diagram
+happen in your terminal.
+</p>
+
+<div class="callout">
+<p>
+<strong>Today's win:</strong> apply a <code>Greeting</code> custom resource
+with <code>kubectl</code>, watch your own <code>Reconcile</code> function log
+its name, and see it create a ConfigMap as a side effect. Then change the
+Greeting and watch it happen again.
+</p>
+</div>
+
+<h2>Step 0 — a cluster to point at</h2>
+<p>
+You've already got <code>mycluster</code> running. That's fine to reuse, but
+a dedicated cluster keeps these lessons from colliding with anything else
+you're testing:
+</p>
+<pre><code>k3d cluster create kubebuilder-lessons
+kubectl config current-context   # should print k3d-kubebuilder-lessons</code></pre>
+<p class="sidenote">
+<code>k3d cluster create</code> merges the new cluster's kubeconfig and
+switches your current context to it automatically — that's why the check
+above matters before you run anything that mutates a cluster.
+</p>
+
+<h2>Step 1 — install the kubebuilder CLI</h2>
+<p>It isn't on your machine yet. Straight from the official docs:</p>
+<pre><code>curl -L -o kubebuilder "https://go.kubebuilder.io/dl/latest/$(go env GOOS)/$(go env GOARCH)"
+chmod +x kubebuilder && sudo mv kubebuilder /usr/local/bin/
+kubebuilder version</code></pre>
+
+<h2>Step 2 — scaffold the project</h2>
+<pre><code>mkdir greeting-operator && cd greeting-operator
+kubebuilder init --domain kubebuilder-lessons.dev --repo greeting-operator</code></pre>
+<p>
+This writes <code>main.go</code>, a <code>Makefile</code>, and <code>go.mod</code>.
+Open <code>main.go</code> and you'll recognize it: it builds a
+<a href="../reference/0001-controller-anatomy-glossary.html">Manager</a> and
+calls <code>mgr.Start(ctx)</code> — that's the process that runs everything
+from Lesson 1's diagram.
+</p>
+
+<h2>Step 3 — define your own Kind</h2>
+<pre><code>kubebuilder create api --group apps --version v1 --kind Greeting --resource --controller</code></pre>
+<p>This scaffolds two files that matter to you right now:</p>
+<ul>
+  <li><code>api/v1/greeting_types.go</code> — the Go struct that <em>is</em> your CRD's schema.</li>
+  <li><code>internal/controller/greeting_controller.go</code> — an empty <code>Reconcile</code> skeleton, wired to watch <code>Greeting</code> objects.</li>
+</ul>
+
+<h2>Step 4 — give Greeting a field</h2>
+<p>In <code>api/v1/greeting_types.go</code>, find <code>GreetingSpec</code> and add:</p>
+<pre><code>type GreetingSpec struct {
+	// Message is written into a ConfigMap by the controller.
+	Message string `json:"message"`
+}</code></pre>
+<p>Then regenerate the CRD YAML and the DeepCopy methods your type needs:</p>
+<pre><code>make manifests generate</code></pre>
+
+<h2>Step 5 — write Reconcile</h2>
+<p>
+Replace the body of <code>Reconcile</code> in
+<code>internal/controller/greeting_controller.go</code>. Map every line back
+to Lesson 1's vocabulary as you read it:
+</p>
+<pre><code>func (r *GreetingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	var greeting appsv1.Greeting
+	if err := r.Get(ctx, req.NamespacedName, &greeting); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil // object gone — nothing to do
+		}
+		return ctrl.Result{}, err
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: req.Namespace},
+	}
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		cm.Data["message"] = greeting.Spec.Message
+		return controllerutil.SetControllerReference(&greeting, cm, r.Scheme)
+	})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	log.Info("reconciled greeting", "configmap-op", op)
+	return ctrl.Result{}, nil
+}</code></pre>
+<p class="sidenote">
+Notice what's <em>not</em> here: nothing reads the incoming event. <code>req</code>
+is only a <code>NamespacedName</code> — the key from the workqueue. Every value
+you use (<code>greeting.Spec.Message</code>) comes from <code>r.Get</code>,
+which reads the Cache. This is Lesson 1's "level-triggered" point, made
+concrete.
+</p>
+
+<p>Add this marker above the <code>Reconcile</code> method so <code>make manifests</code> grants your controller permission to touch ConfigMaps:</p>
+<pre><code>// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch</code></pre>
+<p>Then regenerate once more: <code>make manifests</code>.</p>
+
+<h2>Step 6 — install the CRD, run the controller</h2>
+<pre><code>make install   # teaches your k3d cluster's API server the Greeting schema
+make run       # runs the manager locally, against your k3d cluster — leave this running</code></pre>
+<p>Leave <code>make run</code> in its own terminal — its log output is where you'll watch Reconcile fire.</p>
+
+<h2>Step 7 — apply your own custom resource</h2>
+<p>Open <code>config/samples/apps_v1_greeting.yaml</code>, add a message, and apply it from a second terminal:</p>
+<pre><code>spec:
+  message: "hello from my own CRD"</code></pre>
+<pre><code>kubectl apply -f config/samples/apps_v1_greeting.yaml
+kubectl get configmap greeting-sample -o yaml</code></pre>
+<p>
+You should see a log line in the <code>make run</code> terminal, and a
+ConfigMap holding the message you wrote. That log line, that ConfigMap — that's
+the right-hand side of Lesson 1's diagram, no longer a diagram.
+</p>
+
+<div class="callout">
+<p>
+<strong>Now the important experiment:</strong> edit the sample file's
+<code>message</code> to something else and <code>kubectl apply</code> again.
+Watch <code>Reconcile</code> fire a second time in the logs, and
+<code>kubectl get configmap greeting-sample -o yaml</code> again to confirm
+it updated. Nothing in your code branches on "this is an update, not a
+create" — <code>CreateOrUpdate</code> and your own re-read handle both
+identically. That's what level-triggered buys you.
+</p>
+</div>
+
+<div class="primary-source">
+<span class="label">Primary source</span>
+This lesson is a stripped-down version of the official <a href="https://book.kubebuilder.io/cronjob-tutorial/cronjob-tutorial" target="_blank">Kubebuilder CronJob tutorial</a> — read it next for the full version, including status conditions and owned-object watches (a controller reacting to changes in objects <em>it created</em>, not just the CR itself).
+</div>
+
+<h2>Check your understanding</h2>
+
+<div class="quiz-mcq" data-answer="b">
+  <p class="quiz-q">In the Reconcile code above, where does <code>greeting.Spec.Message</code> actually come from?</p>
+  <button data-choice="a">The incoming ctrl.Request value</button>
+  <button data-choice="b">Your own r.Get call to the Cache</button>
+  <button data-choice="c">The watch event's payload field</button>
+  <button data-choice="d">A copy stashed in the workqueue</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz-mcq" data-answer="a">
+  <p class="quiz-q">You edit the Greeting's message and re-apply it. Why does the ConfigMap update instead of a second one getting created?</p>
+  <button data-choice="a">CreateOrUpdate reads then patches by name</button>
+  <button data-choice="b">Kubernetes merges configmaps automatically</button>
+  <button data-choice="c">The old configmap gets deleted first</button>
+  <button data-choice="d">Reconcile detects an update event type</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<h2>Where this goes next</h2>
+<p>
+Two natural directions from here — tell me which sounds more useful and
+we'll make it Lesson 3: (a) giving <code>Greeting</code> a <code>Status</code>
+field so it reports what it did, or (b) making the controller react to
+changes in the ConfigMap it owns, not just the Greeting itself (the
+<code>Owns()</code> watch).
+</p>
+
+<div class="ask-teacher">
+Stuck on an error message, or want to understand a line before moving on? Ask me — pasting the actual error is more useful to both of us than guessing.
+</div>
+
+<nav class="lesson-links">
+  <span>&larr; <a href="../lessons/0001-anatomy-of-a-controller.html">Lesson 1: Anatomy of a Controller</a></span>
+  <span><a href="../reference/0002-kubebuilder-cli-cheatsheet.html">CLI Cheat Sheet</a></span>
+</nav>
+
+</body>
