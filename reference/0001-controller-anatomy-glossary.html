@@ -47,6 +47,12 @@
   <dt>Garbage collection (cascading delete)</dt>
   <dd>A separate control loop, built into Kubernetes itself (not your controller), that deletes an object once every owner reference pointing at it is gone. This is why deleting a Greeting removes its ConfigMap even though no line of your Reconcile code calls delete — your controller never runs for this at all.</dd>
 
+  <dt>Status subresource</dt>
+  <dd>A second API endpoint (<code>/status</code>) for an object, enabled by the <code>+kubebuilder:subresource:status</code> marker. Once enabled, a plain <code>r.Update()</code> silently ignores changes to <code>.Status</code> — you must call <code>r.Status().Update()</code> instead. The split exists so a user editing spec and a controller reporting status don't fight over the same write.</dd>
+
+  <dt>Condition</dt>
+  <dd>The standard shape for one fact in <code>.status.conditions</code>: a <code>Type</code> (e.g. <code>"Ready"</code>), a <code>Status</code> of True/False/Unknown, a machine-readable <code>Reason</code>, and a human <code>Message</code>. Set with <code>meta.SetStatusCondition</code>, which manages <code>LastTransitionTime</code> for you. This is the same convention almost every real-world CRD uses — recognizing it is what lets you read an unfamiliar operator's status output.</dd>
+
 </dl>
 
 </body>

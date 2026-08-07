@@ -1,0 +1,171 @@
+<title>Lesson 4: Reporting Status with Conditions</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+<body class="lesson">
+
+<p class="kicker">Lesson 4 · Kubebuilder &amp; Controller Internals</p>
+<h1>Reporting Status with Conditions</h1>
+
+<p>
+Everything so far has been invisible from <code>kubectl get</code>. Try it:
+</p>
+<pre><code>kubectl get greeting</code></pre>
+<p>
+Just a name and an age. Your controller knows exactly what it did — it logs
+it — but nothing about that knowledge reaches the object itself. This lesson
+closes that gap using the same mechanism nearly every real CRD uses:
+<strong>status conditions</strong>.
+</p>
+
+<h2>Step 0 — you already have the plumbing</h2>
+<p>Open <code>api/v1/greeting_types.go</code>. Two things are already there, scaffolded by default:</p>
+<pre><code>// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+
+// Greeting is the Schema for the greetings API
+type Greeting struct {
+	...
+}</code></pre>
+<pre><code>type GreetingStatus struct {
+	// +listType=map
+	// +listMapKey=type
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}</code></pre>
+<p>
+And in <code>greeting_controller.go</code>, the RBAC markers already grant
+you what you need:
+</p>
+<pre><code>// +kubebuilder:rbac:groups=apps.kubebuilder-lessons.dev,resources=greetings/status,verbs=get;update;patch</code></pre>
+<p>
+<code>greetings/status</code> is a distinct resource as far as RBAC and the
+API server are concerned — a separate <a href="../reference/0001-controller-anatomy-glossary.html">status subresource</a>,
+not just a field on the main object.
+</p>
+
+<div class="callout">
+<p>
+<strong>The pitfall this causes:</strong> because <code>+kubebuilder:subresource:status</code>
+is set, a plain <code>r.Update(ctx, &amp;greeting)</code> will silently
+<em>not</em> persist any change you made to <code>greeting.Status</code>. You
+must call <code>r.Status().Update(ctx, &amp;greeting)</code> for status
+changes specifically. Mixing these up is one of the most common
+first-operator bugs — the code compiles, runs, logs success, and the status
+just never appears.
+</p>
+</div>
+
+<h2>Step 1 — set a condition</h2>
+<p>
+Add these imports to <code>greeting_controller.go</code>:
+</p>
+<pre><code>import (
+	"fmt"
+
+	"k8s.io/apimachinery/pkg/api/meta"
+)</code></pre>
+<p>
+Then, right after the <code>r.Get</code> call in <code>Reconcile</code> — before you build the ConfigMap — add a guard for an empty message:
+</p>
+<pre><code>if greeting.Spec.Message == "" {
+	meta.SetStatusCondition(&greeting.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionFalse,
+		Reason:  "EmptyMessage",
+		Message: "spec.message must not be empty",
+	})
+	if err := r.Status().Update(ctx, &greeting); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}</code></pre>
+<p>And after the <code>CreateOrUpdate</code> call succeeds, replace the final <code>log.Info</code> / return with:</p>
+<pre><code>meta.SetStatusCondition(&greeting.Status.Conditions, metav1.Condition{
+	Type:    "Ready",
+	Status:  metav1.ConditionTrue,
+	Reason:  "ConfigMapSynced",
+	Message: fmt.Sprintf("configmap %s is in sync", cm.Name),
+})
+if err := r.Status().Update(ctx, &greeting); err != nil {
+	return ctrl.Result{}, err
+}
+
+log.Info("reconciled greeting", "configmap-op", op)
+return ctrl.Result{}, nil</code></pre>
+<p class="sidenote">
+<code>meta.SetStatusCondition</code> (from <code>k8s.io/apimachinery/pkg/api/meta</code>)
+handles the fiddly part — it sets <code>LastTransitionTime</code> for you,
+only bumping it when the <code>Status</code> value actually flips, and
+updates an existing condition of the same <code>Type</code> in place instead
+of appending a duplicate. It does <em>not</em> set <code>ObservedGeneration</code>
+— that's on you if you need it, and you'll want it once you start caring
+whether status reflects the <em>latest</em> spec or a stale one.
+</p>
+
+<h2>Step 2 — make it visible in kubectl get</h2>
+<p>Add these markers directly above the <code>Greeting</code> struct, alongside the ones already there:</p>
+<pre><code>// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status</code></pre>
+<p>Regenerate and reinstall the CRD, then restart the manager:</p>
+<pre><code>make manifests generate
+make install
+# Ctrl-C the running make run, then:
+make run</code></pre>
+
+<h2>Step 3 — watch both branches</h2>
+<pre><code>kubectl patch greeting greeting-sample --type merge -p '{"spec":{"message":""}}'
+kubectl get greeting</code></pre>
+<p>You should see <code>Ready=False</code>, <code>Reason=EmptyMessage</code>. Now fix it:</p>
+<pre><code>kubectl patch greeting greeting-sample --type merge -p '{"spec":{"message":"back to normal"}}'
+kubectl get greeting</code></pre>
+<p><code>Ready</code> flips to <code>True</code>, <code>Reason</code> to <code>ConfigMapSynced</code> — a real, useful <code>kubectl get</code>, driven by the same <code>Reconcile</code> function, no new watch, no new mechanism.</p>
+
+<div class="primary-source">
+<span class="label">Primary source</span>
+<a href="https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties" target="_blank">Kubernetes API conventions — typical status properties</a> for why conditions look the way they do, and <a href="https://pkg.go.dev/k8s.io/apimachinery/pkg/api/meta#SetStatusCondition" target="_blank"><code>meta.SetStatusCondition</code> docs</a> for exactly what it manages for you.
+</div>
+
+<h2>Check your understanding</h2>
+
+<div class="quiz-mcq" data-answer="c">
+  <p class="quiz-q">You set greeting.Status.Conditions in your code, then call r.Update(ctx, &greeting) instead of r.Status().Update(). What happens?</p>
+  <button data-choice="a">Both spec and status get saved</button>
+  <button data-choice="b">The call fails with a clear error</button>
+  <button data-choice="c">It saves, but status silently stays old</button>
+  <button data-choice="d">The whole Reconcile call panics</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz-mcq" data-answer="a">
+  <p class="quiz-q">Which field does meta.SetStatusCondition NOT set for you automatically?</p>
+  <button data-choice="a">ObservedGeneration on the condition</button>
+  <button data-choice="b">LastTransitionTime on first insert</button>
+  <button data-choice="c">LastTransitionTime on a status flip</button>
+  <button data-choice="d">In-place update of a matching Type</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<h2>Where this goes next</h2>
+<p>
+That closes all four success criteria from your mission at least once: you
+can explain the machinery, you built a CRD + controller from scratch, you
+made it self-healing, and it now reports status the way real operators do.
+From here, two good directions: writing an automated test for
+<code>Reconcile</code> with <code>envtest</code> (so you're not hand-testing
+with <code>kubectl patch</code> every time), or picking a real open-source
+operator and reading its controller with this vocabulary in hand. Tell me
+which sounds more useful.
+</p>
+
+<div class="ask-teacher">
+If the Update() vs Status().Update() distinction still feels shaky, say so — it's the single most common bug in real controllers, worth being fully solid on before moving on.
+</div>
+
+<nav class="lesson-links">
+  <span>&larr; <a href="../lessons/0003-owns-and-self-healing.html">Lesson 3: Owns() and Self-Healing</a></span>
+  <span>Glossary: <a href="../reference/0001-controller-anatomy-glossary.html">Controller Anatomy</a></span>
+</nav>
+
+</body>

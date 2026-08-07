@@ -13,7 +13,6 @@
   --code-bg: #f1efe6;
   --good: #2e6b4f;
   --bad: #a13d2f;
-  --max-width: 42rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -62,9 +61,8 @@ body.lesson {
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   font-size: 1.125rem;
   line-height: 1.6;
-  max-width: var(--max-width);
-  margin: 0 auto;
-  padding: 3rem 1.5rem 6rem;
+  margin: 0;
+  padding: 3rem 4rem 6rem;
 }
 
 .lesson h1, .lesson h2, .lesson h3 {
@@ -178,14 +176,22 @@ body.lesson {
   border-radius: 8px;
 }
 
+figure.diagram-wrap { margin: 1.75rem 0; }
+
+svg.diagram {
+  display: block;
+  width: 100%;
+  max-width: 820px;
+  height: auto;
+}
+
 /* Reference docs (print-friendly cheat sheets) */
 body.reference {
   background: var(--paper);
   color: var(--ink);
   font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
-  max-width: 52rem;
-  margin: 0 auto;
-  padding: 2.5rem 1.5rem 4rem;
+  margin: 0;
+  padding: 2.5rem 3rem 4rem;
   line-height: 1.5;
 }
 
