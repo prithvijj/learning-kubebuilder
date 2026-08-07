@@ -18,10 +18,12 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	appsv1 "greeting-operator/api/v1"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -63,6 +65,19 @@ func (r *GreetingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	if greeting.Spec.Message == "" {
+		meta.SetStatusCondition(&greeting.Status.Conditions, metav1.Condition{
+			Type:    "Ready",
+			Status:  metav1.ConditionFalse,
+			Reason:  "EmptyMessage",
+			Message: "spec.message must not be empty",
+		})
+		if err := r.Status().Update(ctx, &greeting); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
@@ -77,6 +92,16 @@ func (r *GreetingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return controllerutil.SetControllerReference(&greeting, cm, r.Scheme)
 	})
 	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	meta.SetStatusCondition(&greeting.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "ConfigMapSynced",
+		Message: fmt.Sprintf("configmap %s is in sync", cm.Name),
+	})
+	if err := r.Status().Update(ctx, &greeting); err != nil {
 		return ctrl.Result{}, err
 	}
 
