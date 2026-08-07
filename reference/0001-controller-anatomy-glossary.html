@@ -53,6 +53,9 @@
   <dt>Condition</dt>
   <dd>The standard shape for one fact in <code>.status.conditions</code>: a <code>Type</code> (e.g. <code>"Ready"</code>), a <code>Status</code> of True/False/Unknown, a machine-readable <code>Reason</code>, and a human <code>Message</code>. Set with <code>meta.SetStatusCondition</code>, which manages <code>LastTransitionTime</code> for you. This is the same convention almost every real-world CRD uses — recognizing it is what lets you read an unfamiliar operator's status output.</dd>
 
+  <dt>envtest</dt>
+  <dd>A controller-runtime library that boots a real <code>etcd</code> and <code>kube-apiserver</code> as local binaries for tests — full API validation and watches, but no kubelet, no scheduler, and critically <strong>no built-in controllers, so no garbage collection</strong>. Smaller than a k3d cluster on purpose: fast, hermetic, good for CI. Not a replacement for testing against k3d — a different, narrower layer.</dd>
+
 </dl>
 
 </body>
