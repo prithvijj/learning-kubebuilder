@@ -20,6 +20,8 @@
   The official end-to-end worked example (a full CRD + controller, more involved than our toy `Greeting`). Use for: the next step up once the basics from Lesson 2 feel easy, especially for status conditions and owned-object watches.
 - [k3d documentation](https://k3d.io/)
   Official docs for the cluster tool the user tests with. Use for: cluster lifecycle (create/delete), image import for locally-built controller images, kubeconfig merging behavior.
+- [Kubebuilder Book — envtest reference](https://book.kubebuilder.io/reference/envtest.html)
+  Official explanation of what envtest starts (etcd + kube-apiserver only) and what it deliberately omits (kubelet, controller-manager, garbage collection). Use for: understanding why some behaviors (e.g. GC-driven cascading delete) can't be tested here and still need a real cluster.
 
 ## Wisdom (Communities)
 
@@ -30,4 +32,3 @@
 
 ## Gaps
 - No resource yet specifically on CRD versioning/conversion webhooks — add when we get there.
-- No resource yet on testing controllers (envtest) — add before the first hands-on controller lesson needs it.

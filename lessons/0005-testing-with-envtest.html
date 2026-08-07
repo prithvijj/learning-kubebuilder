@@ -1,0 +1,159 @@
+<title>Lesson 5: Testing Reconcile with envtest</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+<body class="lesson">
+
+<p class="kicker">Lesson 5 · Kubebuilder &amp; Controller Internals</p>
+<h1>Testing Reconcile with envtest</h1>
+
+<p>
+Every check so far has been you, a terminal, and k3d. That doesn't scale to
+CI, and it's slow for quick iteration. Kubebuilder already scaffolded a test
+suite for exactly this — you just haven't run it yet.
+</p>
+
+<div class="callout">
+<p>
+<strong>What <a href="../reference/0001-controller-anatomy-glossary.html">envtest</a>
+actually is:</strong> a real <code>etcd</code> and a real <code>kube-apiserver</code>,
+run as local binaries for the duration of the test. Full CRD validation, full
+watches — your <code>Reconcile</code> function can't tell the difference from
+a real cluster. What's missing on purpose: no kubelet, no scheduler, and no
+built-in controllers — which means <strong>no garbage collection</strong>.
+It's a deliberately smaller layer than k3d, not a replacement for it.
+</p>
+</div>
+
+<h2>Step 0 — look at what's already there</h2>
+<p>Two files already exist in <code>internal/controller/</code>:</p>
+<ul>
+  <li><code>suite_test.go</code> — boots <code>envtest.Environment</code> in <code>BeforeSuite</code>, pointed at your CRDs in <code>config/crd/bases</code>, and builds a real <code>k8sClient</code> against it. Tears it down in <code>AfterSuite</code>.</li>
+  <li><code>greeting_controller_test.go</code> — one Ginkgo test, "should successfully reconcile the resource."</li>
+</ul>
+<p>Run it as-is:</p>
+<pre><code>make test</code></pre>
+<p class="sidenote">
+First run downloads matching <code>etcd</code>/<code>kube-apiserver</code>
+binaries via <code>setup-envtest</code> into <code>bin/k8s/</code> — that
+needs network access once, then it's cached.
+</p>
+
+<div class="callout">
+<p>
+<strong>It should fail.</strong> Look for a validation error mentioning
+<code>spec.message</code>. Before you fix it — go check why:
+</p>
+<pre><code>grep -A3 "required:" config/crd/bases/apps.kubebuilder-lessons.dev_greetings.yaml</code></pre>
+<p>
+Because <code>Message</code> in <code>GreetingSpec</code> has no
+<code>omitempty</code> and no <code>+optional</code> marker, controller-gen
+put it in the CRD's <code>required</code> list. The scaffolded test's
+<code>BeforeEach</code> creates a Greeting with an empty <code>Spec{}</code> —
+no message — so <code>k8sClient.Create</code> is rejected by real API
+validation, same as it would be against k3d.
+</p>
+</div>
+
+<h2>Step 1 — fix the test's setup</h2>
+<p>In <code>greeting_controller_test.go</code>, inside <code>BeforeEach</code>:</p>
+<pre><code>resource := &appsv1.Greeting{
+	ObjectMeta: metav1.ObjectMeta{
+		Name:      resourceName,
+		Namespace: resourceNamespace,
+	},
+	Spec: appsv1.GreetingSpec{
+		Message: "hello from envtest",
+	},
+}</code></pre>
+<p>Run <code>make test</code> again — it should pass now. But look at what it's actually asserting:</p>
+<pre><code>_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+	NamespacedName: typeNamespacedName,
+})
+Expect(err).NotTo(HaveOccurred())</code></pre>
+<p>
+That only proves <code>Reconcile</code> didn't return an error. It doesn't
+prove the ConfigMap exists, or that its data is right, or that the
+<code>Ready</code> condition got set. A test that only checks "no error" would
+pass even if you deleted the entire body of <code>Reconcile</code>.
+</p>
+
+<h2>Step 2 — assert what you actually built</h2>
+<p>Add these imports to <code>greeting_controller_test.go</code>:</p>
+<pre><code>corev1 "k8s.io/api/core/v1"
+"k8s.io/apimachinery/pkg/api/meta"</code></pre>
+<p>Then, right after the existing <code>Expect(err).NotTo(HaveOccurred())</code>:</p>
+<pre><code>By("checking the derived ConfigMap")
+cm := &corev1.ConfigMap{}
+Expect(k8sClient.Get(ctx, typeNamespacedName, cm)).To(Succeed())
+Expect(cm.Data).To(HaveKeyWithValue("message", "hello from envtest"))
+
+By("checking the Ready condition")
+updated := &appsv1.Greeting{}
+Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+Expect(meta.IsStatusConditionTrue(updated.Status.Conditions, "Ready")).To(BeTrue())</code></pre>
+<p><code>make test</code> once more — now a passing test actually means something: ConfigMap data matches spec, and the condition your Lesson 4 code sets is really there.</p>
+
+<h2>Step 3 — the boundary envtest won't let you test</h2>
+<p>
+Try adding a test that deletes the Greeting and expects the ConfigMap to
+disappear, the way you watched it happen for real in
+<a href="../lessons/0003-owns-and-self-healing.html">Lesson 3</a>:
+</p>
+<pre><code>Expect(k8sClient.Delete(ctx, updated)).To(Succeed())
+Eventually(func() bool {
+	return errors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &corev1.ConfigMap{}))
+}).Should(BeTrue())</code></pre>
+<p>
+This will hang and time out. Not a bug in your code — envtest never runs the
+garbage collector, so no owner-reference cleanup ever happens here. That
+specific behavior can only be verified against a real cluster like k3d.
+Delete this experimental block once you've seen it fail; it's not something
+envtest can ever pass.
+</p>
+
+<div class="primary-source">
+<span class="label">Primary source</span>
+<a href="https://book.kubebuilder.io/reference/envtest.html" target="_blank">Kubebuilder Book — envtest reference</a> for the exact list of what does and doesn't run. For Ginkgo/Gomega syntax itself (<code>Describe</code>, <code>By</code>, <code>Eventually</code>), see the <a href="https://onsi.github.io/ginkgo/" target="_blank">Ginkgo docs</a>.
+</div>
+
+<h2>Check your understanding</h2>
+
+<div class="quiz-mcq" data-answer="a">
+  <p class="quiz-q">Why did the scaffolded test fail before your fix?</p>
+  <button data-choice="a">CRD schema requires spec.message</button>
+  <button data-choice="b">envtest binaries were not installed</button>
+  <button data-choice="c">The Reconcile function had a bug</button>
+  <button data-choice="d">Ginkgo could not find the test file</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz-mcq" data-answer="c">
+  <p class="quiz-q">A test deletes a Greeting and waits for its owned ConfigMap to be garbage collected. Under envtest, what happens?</p>
+  <button data-choice="a">It passes just like it does on k3d</button>
+  <button data-choice="b">It fails with an RBAC permission error</button>
+  <button data-choice="c">It hangs — envtest never runs GC</button>
+  <button data-choice="d">The ConfigMap is deleted immediately</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<h2>Where this goes next</h2>
+<p>
+You now have the full loop: build against k3d by hand, verify the fast path
+with envtest in CI. From here, the next open thread from the mission is
+reading a real, unfamiliar operator's source with this vocabulary — CRD,
+Manager, Cache, Owns(), status conditions — and seeing how much of it now
+reads as familiar shape rather than magic. Pick one you actually use at work,
+or we can look at something well-known like cert-manager or the Postgres
+operator Zalando maintains. Your call.
+</p>
+
+<div class="ask-teacher">
+If any Gomega matcher syntax (Eventually, HaveKeyWithValue) felt unfamiliar, ask — it's worth being comfortable with since it's the same handful of patterns in almost every controller-runtime test suite you'll ever read.
+</div>
+
+<nav class="lesson-links">
+  <span>&larr; <a href="../lessons/0004-reporting-status.html">Lesson 4: Reporting Status with Conditions</a></span>
+  <span>Glossary: <a href="../reference/0001-controller-anatomy-glossary.html">Controller Anatomy</a></span>
+</nav>
+
+</body>

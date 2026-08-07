@@ -22,9 +22,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	appsv1 "greeting-operator/api/v1"
@@ -54,7 +56,9 @@ var _ = Describe("Greeting Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: appsv1.GreetingSpec{
+						Message: "hello from envtest",
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
@@ -80,6 +84,16 @@ var _ = Describe("Greeting Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+
+			By("checking the derived ConfigMap")
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKeyWithValue("message", "hello from envtest"))
+
+			By("checking the Ready Condition")
+			updated := &appsv1.Greeting{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(meta.IsStatusConditionTrue(updated.Status.Conditions, "Ready")).To(BeTrue())
 			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
 			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
