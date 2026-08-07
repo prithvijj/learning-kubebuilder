@@ -88,6 +88,7 @@ func (r *GreetingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 func (r *GreetingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appsv1.Greeting{}).
+		Owns(&corev1.ConfigMap{}).
 		Named("greeting").
 		Complete(r)
 }
