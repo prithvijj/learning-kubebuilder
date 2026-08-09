@@ -22,6 +22,10 @@
   Official docs for the cluster tool the user tests with. Use for: cluster lifecycle (create/delete), image import for locally-built controller images, kubeconfig merging behavior.
 - [Kubebuilder Book — envtest reference](https://book.kubebuilder.io/reference/envtest.html)
   Official explanation of what envtest starts (etcd + kube-apiserver only) and what it deliberately omits (kubelet, controller-manager, garbage collection). Use for: understanding why some behaviors (e.g. GC-driven cascading delete) can't be tested here and still need a real cluster.
+- [Kubernetes docs — Finalizers](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/)
+  Official concept page: what a finalizer is, how `deletionTimestamp` and the Terminating state work, and why a stuck finalizer blocks deletion forever. Use for: anything involving custom cleanup logic on delete.
+- [controller-runtime `controllerutil` package docs](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/controller/controllerutil)
+  Primary source for `AddFinalizer` / `RemoveFinalizer` / `ContainsFinalizer` / `CreateOrUpdate` / `SetControllerReference` signatures — the small helper functions used in nearly every Reconcile function.
 
 ## Wisdom (Communities)
 

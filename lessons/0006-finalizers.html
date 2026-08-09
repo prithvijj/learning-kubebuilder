@@ -1,0 +1,190 @@
+<title>Lesson 6: Finalizers and Custom Cleanup</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+<body class="lesson">
+
+<p class="kicker">Lesson 6 · Kubebuilder &amp; Controller Internals</p>
+<h1>Finalizers and Custom Cleanup</h1>
+
+<p>
+<a href="../lessons/0003-owns-and-self-healing.html">Lesson 3</a>'s garbage
+collector deletes your ConfigMap automatically when the Greeting goes,
+because the ConfigMap lives in the API server and has an owner reference. But
+GC has zero visibility into anything <em>outside</em> Kubernetes — a cloud
+load balancer, a row in an external database, a webhook call to some other
+system. If your controller ever needs to clean up something like that before
+the object disappears, GC can't help. This is what
+<a href="../reference/0001-controller-anatomy-glossary.html">finalizers</a> are for.
+</p>
+
+<div class="callout">
+<p>
+<strong>The mechanism, in one sentence:</strong> a finalizer is a string on
+the object that tells the API server "don't actually delete this from etcd
+yet." <code>kubectl delete</code> sets <code>metadata.deletionTimestamp</code>
+instead of removing the object — this is what shows up as
+<code>Terminating</code> — and your <code>Reconcile</code> keeps getting
+called until every finalizer is gone.
+</p>
+</div>
+
+<h2>Step 0 — make sure you have a live Greeting</h2>
+<pre><code>kubectl apply -f config/samples/apps_v1_greeting.yaml
+kubectl get greeting</code></pre>
+
+<h2>Step 1 — add a finalizer to the type</h2>
+<p>In <code>greeting_controller.go</code>, add a constant near the top:</p>
+<pre><code>const greetingFinalizer = "apps.kubebuilder-lessons.dev/finalizer"</code></pre>
+<p>Add these imports:</p>
+<pre><code>"os"
+"time"</code></pre>
+
+<h2>Step 2 — branch on DeletionTimestamp</h2>
+<p>
+Right after the initial <code>r.Get</code> in <code>Reconcile</code> (before the empty-message check), add:
+</p>
+<pre><code>if !greeting.DeletionTimestamp.IsZero() {
+	if controllerutil.ContainsFinalizer(&greeting, greetingFinalizer) {
+		if err := r.cleanupExternalResource(&greeting); err != nil {
+			return ctrl.Result{}, err
+		}
+		controllerutil.RemoveFinalizer(&greeting, greetingFinalizer)
+		if err := r.Update(ctx, &greeting); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+if controllerutil.AddFinalizer(&greeting, greetingFinalizer) {
+	if err := r.Update(ctx, &greeting); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}</code></pre>
+<p class="sidenote">
+Both branches call <code>r.Update</code>, not <code>r.Status().Update()</code> —
+<code>metadata.finalizers</code> is ordinary object metadata, not status. This
+is the mirror image of the mistake <a href="../lessons/0004-reporting-status.html">Lesson 4</a>
+warned about: use the wrong one here and the finalizer never persists, and
+you'd have a Greeting stuck in Terminating with no obvious reason why.
+</p>
+<p class="sidenote">
+Returning right after adding the finalizer looks like it does nothing useful, but it isn't wasted: that <code>r.Update</code> call is itself a change the informer will see, which enqueues this exact key again — the next Reconcile picks up from a fresh <code>r.Get</code> with the finalizer already in place. Same level-triggered logic from <a href="../lessons/0001-anatomy-of-a-controller.html">Lesson 1</a>, just triggered by your own write this time.
+</p>
+
+<h2>Step 3 — the cleanup itself</h2>
+<p>Add this method below <code>Reconcile</code>:</p>
+<pre><code>func (r *GreetingReconciler) cleanupExternalResource(greeting *appsv1.Greeting) error {
+	line := fmt.Sprintf("%s: goodbye from %s/%s (message was %q)\n",
+		time.Now().Format(time.RFC3339), greeting.Namespace, greeting.Name, greeting.Spec.Message)
+	f, err := os.OpenFile("/tmp/greeting-farewells.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(line)
+	return err
+}</code></pre>
+<p>
+A file on disk is standing in for "something Kubernetes cannot see or
+clean up on its own" — in a real controller this would be a cloud API call,
+a DNS record deletion, anything external.
+</p>
+<p>Restart the manager: <code>make run</code>. Then confirm the finalizer landed on your existing Greeting, without you re-applying anything:</p>
+<pre><code>kubectl get greeting greeting-sample -o jsonpath='{.metadata.finalizers}'</code></pre>
+<p class="sidenote">That happened because the manager re-lists everything into its cache on startup, which queues a Reconcile for every existing object — not just future changes.</p>
+
+<h2>Step 4 — watch a clean deletion</h2>
+<p>To actually see the Terminating window (cleanup is normally too fast to catch), temporarily add a slow-down at the top of <code>cleanupExternalResource</code>:</p>
+<pre><code>time.Sleep(5 * time.Second) // temporary, for observing Terminating — remove after this step</code></pre>
+<p>Restart <code>make run</code>, then in another terminal:</p>
+<pre><code>kubectl delete greeting greeting-sample &
+sleep 1
+kubectl get greeting greeting-sample -o yaml | grep -A2 deletionTimestamp</code></pre>
+<p>You should see <code>deletionTimestamp</code> set while the object is still there. Wait for the delete to finish, then check the proof of cleanup:</p>
+<pre><code>cat /tmp/greeting-farewells.log</code></pre>
+<p>Now remove the <code>time.Sleep</code> line — it was only for this observation.</p>
+
+<h2>Step 5 — the failure mode everyone eventually hits</h2>
+<p>Re-apply the sample, then comment out just the finalizer-removal half of the deletion branch:</p>
+<pre><code>if controllerutil.ContainsFinalizer(&greeting, greetingFinalizer) {
+	if err := r.cleanupExternalResource(&greeting); err != nil {
+		return ctrl.Result{}, err
+	}
+	// controllerutil.RemoveFinalizer(&greeting, greetingFinalizer)
+	// if err := r.Update(ctx, &greeting); err != nil {
+	// 	return ctrl.Result{}, err
+	// }
+}</code></pre>
+<p>Restart <code>make run</code>, then:</p>
+<pre><code>kubectl delete greeting greeting-sample</code></pre>
+<p>
+It hangs. Forever. <code>Ctrl-C</code> it, and confirm the object is still
+there, permanently <code>Terminating</code>:
+</p>
+<pre><code>kubectl get greeting greeting-sample</code></pre>
+
+<div class="callout">
+<p>
+<strong>This is the real-world "why won't my resource delete" problem</strong> —
+almost everyone who's used Kubernetes for a while has hit a stuck namespace
+or CRD for exactly this reason: a finalizer that never gets removed, usually
+because the controller that owns it crashed, was uninstalled, or (like here)
+has a bug. The escape hatch, when you're sure it's safe:
+</p>
+<pre><code>kubectl patch greeting greeting-sample -p '{"metadata":{"finalizers":[]}}' --type=merge</code></pre>
+<p>
+This forces the finalizer list empty directly, so the API server completes
+the delete — but your cleanup code never ran. Only reach for this once you
+know that's an acceptable outcome.
+</p>
+</div>
+
+<p>Uncomment the <code>RemoveFinalizer</code>/<code>Update</code> lines from Step 5, restart <code>make run</code>, and re-apply the sample to leave your controller in its correct, working state.</p>
+
+<div class="primary-source">
+<span class="label">Primary source</span>
+<a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/" target="_blank">Kubernetes docs — Finalizers</a> for the concept itself, and <a href="https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/controller/controllerutil" target="_blank">controllerutil docs</a> for the exact helper signatures used above.
+</div>
+
+<h2>Check your understanding</h2>
+
+<div class="quiz-mcq" data-answer="b">
+  <p class="quiz-q">Reconcile calls controllerutil.AddFinalizer(&greeting, name) and returns, with no r.Update call. What actually happens?</p>
+  <button data-choice="a">Finalizer appears, saved automatically</button>
+  <button data-choice="b">Nothing — change never leaves memory</button>
+  <button data-choice="c">API server rejects the next request</button>
+  <button data-choice="d">Greeting is deleted immediately instead</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz-mcq" data-answer="a">
+  <p class="quiz-q">A Greeting has been stuck in Terminating for an hour. Most likely explanation?</p>
+  <button data-choice="a">A finalizer is present and never removed</button>
+  <button data-choice="b">The owned ConfigMap still has an owner ref</button>
+  <button data-choice="c">Kubernetes retries deletes once per hour</button>
+  <button data-choice="d">RBAC is denying the delete verb</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<h2>Where this goes next</h2>
+<p>
+That's the last major piece of "how the logic gets run" from your original
+mission — creation, self-healing, status, testing, and now deletion. From
+here, the highest-value move is probably reading a real operator's source
+with all of this vocabulary in hand. Whenever you're ready for that, tell me
+which one (something from work, or a well-known one like cert-manager) and
+we'll make it the next lesson.
+</p>
+
+<div class="ask-teacher">
+The DeletionTimestamp branch ordering (checking it before the empty-message guard) is deliberate — ask if it's not obvious why a Terminating object should skip validation entirely.
+</div>
+
+<nav class="lesson-links">
+  <span>&larr; <a href="../lessons/0005-testing-with-envtest.html">Lesson 5: Testing Reconcile with envtest</a></span>
+  <span>Glossary: <a href="../reference/0001-controller-anatomy-glossary.html">Controller Anatomy</a></span>
+</nav>
+
+</body>

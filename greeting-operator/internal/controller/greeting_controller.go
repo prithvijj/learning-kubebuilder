@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
+	"time"
 
 	appsv1 "greeting-operator/api/v1"
 
@@ -33,6 +35,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 )
+
+const greetingFinalizer = "apps.kubebuilder-lessons.dev/finalizer"
 
 // GreetingReconciler reconciles a Greeting object
 type GreetingReconciler struct {
@@ -63,6 +67,26 @@ func (r *GreetingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, nil // object gone - nothing to do
 		}
 		return ctrl.Result{}, err
+	}
+
+	if !greeting.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&greeting, greetingFinalizer) {
+			if err := r.cleanupExternalResource(&greeting); err != nil {
+				return ctrl.Result{}, err
+			}
+			controllerutil.RemoveFinalizer(&greeting, greetingFinalizer)
+			if err := r.Update(ctx, &greeting); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if controllerutil.AddFinalizer(&greeting, greetingFinalizer) {
+		if err := r.Update(ctx, &greeting); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 
 	if greeting.Spec.Message == "" {
@@ -107,6 +131,19 @@ func (r *GreetingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	log.Info("reconciled greeting", "configmap-op", op)
 	return ctrl.Result{}, nil
+}
+
+func (r *GreetingReconciler) cleanupExternalResource(greeting *appsv1.Greeting) error {
+	time.Sleep(5 * time.Second)
+	line := fmt.Sprintf("%s: goodbye from %s/%s (message was %q)\n",
+		time.Now().Format(time.RFC3339), greeting.Namespace, greeting.Name, greeting.Spec.Message)
+	f, err := os.OpenFile("/tmp/greeting-farewells.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(line)
+	return err
 }
 
 // SetupWithManager sets up the controller with the Manager.
