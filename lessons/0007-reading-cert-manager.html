@@ -1,0 +1,144 @@
+<title>Lesson 7: Reading cert-manager</title>
+<link rel="stylesheet" href="../assets/style.css">
+<script src="../assets/quiz.js" defer></script>
+<body class="lesson">
+
+<p class="kicker">Lesson 7 · Kubebuilder &amp; Controller Internals</p>
+<h1>Reading cert-manager</h1>
+
+<p>
+Everything so far has been a toy CRD you built yourself. This lesson is
+different: no code to write, just real production source to read, using the
+vocabulary from Lessons 1–6 as your map. <a href="https://github.com/cert-manager/cert-manager" target="_blank">cert-manager</a>
+issues and renews TLS certificates cluster-wide — it's one of the most
+widely deployed operators in the ecosystem, so if you work with Kubernetes
+long enough, you'll likely meet it again.
+</p>
+
+<h2>Step 0 — orient yourself</h2>
+<p>Open these two, side by side with your own project:</p>
+<ul>
+  <li><a href="https://github.com/cert-manager/cert-manager/blob/master/pkg/apis/certmanager/v1/types_certificate.go" target="_blank"><code>pkg/apis/certmanager/v1/types_certificate.go</code></a> — the <code>Certificate</code> CRD's Go type, the direct counterpart to your <code>api/v1/greeting_types.go</code>.</li>
+  <li><a href="https://github.com/cert-manager/cert-manager/tree/master/pkg/controller/certificates" target="_blank"><code>pkg/controller/certificates/</code></a> — where the reconciling logic lives, the counterpart to your <code>internal/controller/greeting_controller.go</code>.</li>
+</ul>
+<p>
+Look inside that second directory. You'll find <code>trigger/</code>,
+<code>keymanager/</code>, <code>requestmanager/</code>, <code>issuing/</code>,
+<code>readiness/</code>, <code>revisionmanager/</code> — six separate
+controllers, all watching the <em>same</em> <code>Certificate</code> object.
+</p>
+
+<div class="callout">
+<p>
+<strong>New idea this lesson introduces:</strong> your Greeting controller
+does everything in one <code>Reconcile</code> — validate, sync a ConfigMap,
+set status, handle deletion. cert-manager splits one CRD's entire lifecycle
+across six narrow controllers instead of one large one. Each owns exactly
+one job and (typically) one status condition. None of them call each other
+directly — they coordinate purely by writing to the shared
+<code>Certificate</code> object's status, the same way your finalizer logic
+and your <code>Owns()</code> watch never call each other directly either.
+</p>
+</div>
+
+<h2>Step 1 — read one controller closely</h2>
+<p>
+Open <a href="https://github.com/cert-manager/cert-manager/blob/master/pkg/controller/certificates/trigger/trigger_controller.go" target="_blank"><code>trigger_controller.go</code></a>.
+Its whole job is deciding <em>whether</em> a certificate needs to be
+reissued — not doing the reissuing itself. Find these three things (use
+Ctrl-F, don't just skim):
+</p>
+<ul>
+  <li>The function that gets called per-object. What is it named, and what does it take as a parameter — is it <code>Reconcile(ctx, req)</code>?</li>
+  <li>The status condition type it sets when reissuance is needed.</li>
+  <li>A check involving the target Secret's owner — what problem is it guarding against?</li>
+</ul>
+
+<div class="callout">
+<p>
+<strong>What you should find:</strong> the function is
+<code>ProcessItem(ctx context.Context, key types.NamespacedName) error</code>
+— not <code>Reconcile(ctx, req)</code>. cert-manager built its own
+controller/workqueue plumbing directly on client-go, predating widespread
+controller-runtime adoption. <strong>The name and signature are different.
+The contract is identical:</strong> take a key, re-fetch full current state,
+decide, return an error or don't. This is Lesson 1's level-triggered pattern
+again, wearing different clothes. When it decides reissuance is needed, it
+sets an <code>"Issuing"</code> condition to <code>True</code> — and the
+Secret-ownership check exists to stop two different Certificates from
+fighting over control of the same target Secret.
+</p>
+</div>
+
+<h2>Step 2 — a real finalizer, not a toy one</h2>
+<p>
+Now look at <a href="https://github.com/cert-manager/cert-manager/blob/master/pkg/controller/acmechallenges/sync.go" target="_blank"><code>pkg/controller/acmechallenges/sync.go</code></a>.
+A <code>Challenge</code> object represents cert-manager proving domain
+ownership to a Certificate Authority — by creating a real DNS TXT record or a
+temporary HTTP route. Search for <code>Finalizer</code>.
+</p>
+<div class="callout">
+<p>
+You'll find <code>cmacme.ACMEDomainQualifiedFinalizer</code>, and a
+<code>finalize()</code> function that calls <code>solver.CleanUp()</code> —
+which removes the actual DNS record or HTTP route from a real external
+provider before the finalizer comes off and the Challenge is allowed to
+disappear. Your Lesson 6 farewell log file was a stand-in for exactly this
+class of problem: an external side effect Kubernetes' own garbage collector
+could never know how to reverse.
+</p>
+</div>
+
+<h2>Step 3 — one more contrast worth noticing</h2>
+<p>
+Check <code>CertificateStatus</code> in <code>types_certificate.go</code>
+from Step 0. Its <code>Conditions</code> field is typed
+<code>[]CertificateCondition</code> — a type cert-manager defined itself —
+not <code>[]metav1.Condition</code> like your <code>GreetingStatus</code>.
+</p>
+<p class="sidenote">
+<code>metav1.Condition</code> became a shared community standard after
+cert-manager had already built its own equivalent shape (<code>Type</code>,
+<code>Status</code>, <code>Reason</code>, <code>Message</code>,
+<code>LastTransitionTime</code>). This is a normal artifact of a project's
+age, not a mistake — expect to see this kind of "almost-standard, predates
+the standard" shape often once you start reading enough real operators.
+</p>
+
+<h2>Check your understanding</h2>
+
+<div class="quiz-mcq" data-answer="b">
+  <p class="quiz-q">trigger_controller.go's per-object entrypoint is ProcessItem(ctx, key), not Reconcile(ctx, req). What does this tell you?</p>
+  <button data-choice="a">It predates and ignores level-triggering</button>
+  <button data-choice="b">Same contract, older plumbing than yours</button>
+  <button data-choice="c">It is a validating admission webhook</button>
+  <button data-choice="d">It only runs once at controller startup</button>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="primary-source">
+<span class="label">Primary source</span>
+Everything in this lesson is the cert-manager source itself — <a href="https://github.com/cert-manager/cert-manager" target="_blank">github.com/cert-manager/cert-manager</a>. For the user-facing side of what these controllers implement, <a href="https://cert-manager.io/docs/usage/certificate/" target="_blank">cert-manager.io's Certificate docs</a> are the high-trust reference.
+</div>
+
+<h2>Where this goes next</h2>
+<p>
+Two directions from here, both reasonable: keep reading cert-manager deeper
+(the ACME solver interface, or how <code>issuing/</code> actually talks to a
+CA), or bring something new back to your own <code>Greeting</code> operator —
+a validating webhook to reject an empty message at admission time instead of
+after the fact, or splitting your one Reconcile into two narrow ones the way
+cert-manager does. Tell me which sounds more useful, or if a specific
+operator from your own work has come up since we started.
+</p>
+
+<div class="ask-teacher">
+If ProcessItem vs Reconcile felt like a bigger jump than expected, say so — recognizing the same contract under a different name, in someone else's codebase, is exactly the skill this lesson is testing.
+</div>
+
+<nav class="lesson-links">
+  <span>&larr; <a href="../lessons/0006-finalizers.html">Lesson 6: Finalizers and Custom Cleanup</a></span>
+  <span>Glossary: <a href="../reference/0001-controller-anatomy-glossary.html">Controller Anatomy</a></span>
+</nav>
+
+</body>

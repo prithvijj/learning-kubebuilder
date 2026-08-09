@@ -26,6 +26,8 @@
   Official concept page: what a finalizer is, how `deletionTimestamp` and the Terminating state work, and why a stuck finalizer blocks deletion forever. Use for: anything involving custom cleanup logic on delete.
 - [controller-runtime `controllerutil` package docs](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/controller/controllerutil)
   Primary source for `AddFinalizer` / `RemoveFinalizer` / `ContainsFinalizer` / `CreateOrUpdate` / `SetControllerReference` signatures — the small helper functions used in nearly every Reconcile function.
+- [cert-manager source (github.com/cert-manager/cert-manager)](https://github.com/cert-manager/cert-manager)
+  A real, well-known, moderately complex operator. Used directly in Lesson 7 to see the vocabulary (CRD, conditions, finalizers) in production code, including places it diverges from Kubebuilder's defaults (its own pre-`metav1.Condition` condition type, and a hand-rolled `ProcessItem(ctx, key)` controller shape that predates widespread controller-runtime adoption).
 
 ## Wisdom (Communities)
 
