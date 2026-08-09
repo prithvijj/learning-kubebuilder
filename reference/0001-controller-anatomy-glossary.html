@@ -44,7 +44,7 @@
   <dd>A watch on a Kind other than the one passed to <code>For()</code>, added via <code>.Owns(&amp;SomeKind{})</code> in <code>SetupWithManager</code>. It feeds the <em>same</em> WorkQueue as the primary watch, but translates each event into the <strong>owner's</strong> key (read from the owner reference) rather than the changed object's own key.</dd>
   <dd class="avoid"><em>Avoid:</em> assuming a secondary watch is a different mechanism from Lesson 1's WorkQueue — it's the identical queue, just fed by a second source with a translation step in front of it.</dd>
 
-  <dt>Garbage collection (cascading delete)</dt>
+  <dt id="garbage-collection">Garbage collection (cascading delete)</dt>
   <dd>A separate control loop, built into Kubernetes itself (not your controller), that deletes an object once every owner reference pointing at it is gone. This is why deleting a Greeting removes its ConfigMap even though no line of your Reconcile code calls delete — your controller never runs for this at all.</dd>
 
   <dt>Status subresource</dt>
@@ -55,6 +55,13 @@
 
   <dt>envtest</dt>
   <dd>A controller-runtime library that boots a real <code>etcd</code> and <code>kube-apiserver</code> as local binaries for tests — full API validation and watches, but no kubelet, no scheduler, and critically <strong>no built-in controllers, so no garbage collection</strong>. Smaller than a k3d cluster on purpose: fast, hermetic, good for CI. Not a replacement for testing against k3d — a different, narrower layer.</dd>
+
+  <dt>Finalizer</dt>
+  <dd>A string in <code>metadata.finalizers</code> that tells the API server "don't remove this object from etcd yet." While any finalizer remains, a deleted object stays in the Terminating state instead of disappearing — giving your controller a chance to run cleanup that <a href="#garbage-collection">garbage collection</a> can't do, because GC only knows about other Kubernetes objects, never anything external (a cloud resource, a third-party API call, a file on disk).</dd>
+  <dd class="avoid"><em>Avoid:</em> assuming a finalizer and an owner reference do the same job — an owner reference lets GC delete a <em>Kubernetes</em> child automatically; a finalizer lets <em>your code</em> run before deletion of anything, Kubernetes-native or not.</dd>
+
+  <dt>DeletionTimestamp / Terminating</dt>
+  <dd>The moment <code>kubectl delete</code> is called on an object with at least one finalizer, the API server sets <code>metadata.deletionTimestamp</code> instead of deleting immediately — this is what <code>kubectl</code> reports as <code>Terminating</code>. The object still exists, still triggers Reconcile calls, right up until the last finalizer is removed.</dd>
 
 </dl>
 
